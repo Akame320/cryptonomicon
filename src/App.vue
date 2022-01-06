@@ -29,11 +29,11 @@
             <!-- HELP -->
             <div v-if="similarTickers" class="flex bg-white shadow-md p-1 rounded-md shadow-md flex-wrap">
               <span
-                  v-for="(similarTicker, idx) of similarTickers"
+                  v-for="(similarTicker, idx) of filterSimilarTickers"
                   :key="idx"
-                  @click="addTicker(similarTicker)"
+                  @click="addTickerFromSimilar(similarTicker.Symbol)"
                   class="inline-flex items-center px-2 m-1 rounded-md text-xs font-medium bg-gray-300 text-gray-800 cursor-pointer">
-              {{ similarTicker }}
+              {{ similarTicker.Symbol }}
             </span>
             </div>
             <div v-if="isWarningTickerExists" class="text-sm text-red-600">Такой тикер уже добавлен</div>
@@ -67,16 +67,16 @@
 
         <div>
           <button
-              @click="paginationPrev"
+              @click="page--"
               class="my-4 mx-2 inline-flex items-center py-2 px-4 border border-transparent shadow-sm text-sm leading-4 font-medium rounded-full text-white bg-gray-600 hover:bg-gray-700 transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500"
-              :class="{'btn-disable': isDisablePrevButtonPagination}"
+              :class="{'btn-disable': page === 1}"
           >
             Назад
           </button>
           {{ page }}
-          <button @click="paginationNext"
+          <button @click="page++"
                   class="my-4 mx-2 inline-flex items-center py-2 px-4 border border-transparent shadow-sm text-sm leading-4 font-medium rounded-full text-white bg-gray-600 hover:bg-gray-700 transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500"
-                  :class="{'btn-disable': isDisableNextButtonPagination}"
+                  :class="{'btn-disable': page >= maxPages}"
           >
             Вперед
           </button>
@@ -86,7 +86,7 @@
         <hr class="w-full border-t border-gray-600 my-4"/>
 
         <dl class="mt-5 grid grid-cols-1 gap-5 sm:grid-cols-3">
-          <div v-for="ticker of paginationTickers(tickersFilter())" :key="ticker.name + ticker.price"
+          <div v-for="ticker of paginationTickers" :key="ticker.name + ticker.price"
                @click="tickerCardHandler(ticker)"
                class="bg-white overflow-hidden shadow rounded-lg border-purple-800 border-solid cursor-pointer"
                :class="{'border-4': currentTickerSelect === ticker}"
@@ -129,7 +129,7 @@
         </h3>
         <div class="flex items-end border-gray-600 border-b border-l h-64">
           <div
-              v-for="(bar, idx) of normalizeGraph()"
+              v-for="(bar, idx) of normalizeGraph"
               :key="idx"
               class="bg-purple-800 border w-10"
               :style="{height: `${bar}%`}"
@@ -138,7 +138,7 @@
         <button
             type="button"
             class="absolute top-0 right-0"
-            @click="removeCurrentTickerSelect"
+            @click="removeGraph"
         >
           <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -169,6 +169,17 @@
 
 <script>
 
+// #-0-# Тикеры не обновляются при перезагрузке
+// #-1-# Валидация работает не исправно
+// #-2-# Маг значения
+// #-3-# Нет подсказок
+// #-4-# Портянка функций
+// #-5-# Пересмотреть методы на логику
+// #-6-#
+// #-7-#
+// #-8-#
+// #-9-#
+
 export default {
   name: 'App',
   components: {},
@@ -177,76 +188,134 @@ export default {
       tickerInput: '',
       isWarningTickerExists: false,
       currentTickerSelect: null,
-      graph: [],
-      LOCAL_STORAGE_TICKER_KEY: 'tickerListStorage',
       filterInput: '',
       page: 1,
-      PAGE_TICKERS_LENGTH: 6,
-      isDisablePrevButtonPagination: true,
-      isDisableNextButtonPagination: false,
 
       similarTickers: [],
       tickers: [],
-      allManyList: []
+      allManyList: [],
+      graph: [],
+
+      LOCAL_STORAGE_TICKERS_KEY: 'tickerListStorage',
+      PAGE_TICKERS_LENGTH: 6,
+      API_PATH_ALL_MANY_LIST: 'https://min-api.cryptocompare.com/data/all/coinlist?summary=true',
+      API_KEY_FOR_GET_TICKERS_PRICE: '1bb9bb67f17a67ad766c00d7dbcfa4e20a525052f5980e77f399bfce8939a7d0',
+      API_PATH_TICKERS_PRICE: 'https://min-api.cryptocompare.com/data/price',
+      TICKERS_SIMILAR_OUT_COUNT: 4,
     }
   },
   mounted() {
-    this.allManyList = this.getAllMany()
+    this.getAllMany();
 
-    const tickerListStorage = JSON.parse(localStorage.getItem(this.LOCAL_STORAGE_TICKER_KEY))
-    if (tickerListStorage) {
-      this.tickers = tickerListStorage
-      this.checkStatePaginationButton()
+    if (this.getTickersFromLocalStorage) {
+      this.tickers = this.getTickersFromLocalStorage
+      this.subscribeToUpdates()
     }
 
   },
-  methods: {
-    addTicker(tickerName) {
+  computed: {
+    tickersFilter() {
+      return this.tickers.filter((ticker) => ticker.name.includes(this.filterInput))
+    },
 
-      if (!this.tickerInputValidation()) return false
+    searchSimilarTickers() {
+      return this.similarTickers.filter(ticker => {
+        return ticker.Symbol.includes(this.tickerInput) && !this.checkPresenceTicker(ticker.Symbol)
+      })
+    },
 
-      const newTicker = {
-        name: tickerName,
-        price: null
+    filterSimilarTickers() {
+      return this.searchSimilarTickers.slice(0, this.TICKERS_SIMILAR_OUT_COUNT)
+    },
+
+    tickerInputValidation() {
+      if (/^\s*$/.test(this.tickerInput)) return false;
+      if (this.tickers.length > 0) {
+        if (this.checkPresenceTicker(this.tickerInput)) return false;
+      }
+      if (!this.checkTickerInAllManyList) return false;
+      return true;
+    },
+
+    paginationTickers() {
+      return this.tickersFilter.slice(((this.page - 1) * this.PAGE_TICKERS_LENGTH), this.page * this.PAGE_TICKERS_LENGTH)
+    },
+
+    getTickersFromLocalStorage() {
+      return JSON.parse(localStorage.getItem(this.LOCAL_STORAGE_TICKERS_KEY))
+    },
+
+    normalizeGraph() {
+      const maxValue = Math.max(...this.graph);
+      const minValue = Math.min(...this.graph);
+
+      if (maxValue === minValue) {
+        return new Array(this.graph.length).fill(50)
       }
 
-      setInterval(async () => {
-        const f = await fetch(`https://min-api.cryptocompare.com/data/price?fsym=${newTicker.name}&tsyms=USD&api-key=1bb9bb67f17a67ad766c00d7dbcfa4e20a525052f5980e77f399bfce8939a7d0`);
-        const data = await f.json();
-        newTicker.price = data.USD
+      return this.graph.map(
+          price => 5 + ((price - minValue) * 95) / (maxValue - minValue)
+      );
+    },
 
-        if (this.currentTickerSelect?.name === newTicker.name) {
-          this.graph.push(data.USD)
-        }
-      }, 3000)
+    checkTickerInAllManyList() {
+      return this.similarTickers.find((ticker) => ticker.Symbol === this.tickerInput);
+    },
 
+    maxPages() {
+      return Math.ceil(this.tickersFilter.length / this.PAGE_TICKERS_LENGTH)
+    }
+  },
+  methods: {
+    getAllMany() {
+      fetch(this.API_PATH_ALL_MANY_LIST)
+          .then((response) => {
+            return response.json();
+          })
+          .then((data) => {
+            this.similarTickers = this.normalizeSimilarTickers(data.Data)
+          });
+    },
 
-      this.tickers.push(newTicker)
-      this.tickerInput = ''
-      this.filterInput = ''
-      this.similarTickers = this.similarTickers.splice(0, 3)
+    normalizeSimilarTickers(similarTickers) {
+      const normSimilarTickers = []
+      for (const key in similarTickers) {
+        normSimilarTickers.push(similarTickers[key])
+      }
+      return normSimilarTickers;
+    },
 
-      this.checkStatePaginationButton()
+    /*
+    ------------------------------------------------------------------------------------------------------------------------
+    ------------------------- TICKER() -------------------------------------------------------------------------------------
+    ------------------------------------------------------------------------------------------------------------------------
+    */
+
+    checkPresenceTicker(tickerName) {
+      return this.tickers.find((t) => t.name === tickerName)
+    },
+
+    addTicker(tickerName) {
+      if (!this.tickerInputValidation) return false;
+      this.tickers.push(this.createTicker(tickerName))
+      this.clearInputs()
+    },
+
+    addTickerFromSimilar(tickerName) {
+      this.tickers.push(this.createTicker(tickerName))
+      this.clearInputs()
+    },
+
+    createTicker(name) {
+      return {
+        name: name,
+        price: null
+      }
     },
 
     removeTicker(ticker) {
       const removeTickerIndex = this.tickers.findIndex((t) => t === ticker)
       this.tickers.splice(removeTickerIndex, 1)
-
-      const isTickersInBoard = this.paginationTickers(this.tickersFilter());
-      if (isTickersInBoard.length === 0 && this.tickers && this.page !== 1) {
-        this.page--;
-      }
-
-      this.checkStatePaginationButton()
-    },
-
-    paginationTickers(tickersList) {
-      return tickersList.slice(((this.page - 1) * this.PAGE_TICKERS_LENGTH), this.page * this.PAGE_TICKERS_LENGTH)
-    },
-
-    checkPresenceTicker(tickerName) {
-      return this.tickers.find((t) => t.name === tickerName)
     },
 
     tickerCardHandler(ticker) {
@@ -254,98 +323,77 @@ export default {
       this.graph.splice(0, this.graph.length)
     },
 
-    removeCurrentTickerSelect() {
+    /*
+    ------------------------------------------------------------------------------------------------------------------------
+    ------------------------- PAGINATION() ---------------------------------------------------------------------------------
+    ------------------------------------------------------------------------------------------------------------------------
+    */
+
+    updatePageCounter() {
+      const thereIsTickersInBoard = this.paginationTickers;
+      if (thereIsTickersInBoard.length === 0 && this.tickers && this.page !== 1) {
+        this.page--;
+      }
+    },
+
+    /*
+    ------------------------------------------------------------------------------------------------------------------------
+    ------------------------- GRAPH() --------------------------------------------------------------------------------------
+    ------------------------------------------------------------------------------------------------------------------------
+    */
+
+
+    /*
+    ------------------------------------------------------------------------------------------------------------------------
+    ------------------------- HELPERS() --------------------------------------------------------------------------------------
+    ------------------------------------------------------------------------------------------------------------------------
+    */
+
+    removeGraph() {
       this.currentTickerSelect = null
     },
 
-    tickerInputValidation() {
-      let isValidTickerInput = true;
+    subscribeToUpdates() {
+      setInterval(async () => {
+        for (const ticker of this.tickers) {
+          const f = await fetch(`${this.API_PATH_TICKERS_PRICE}?fsym=${ticker.name}&tsyms=USD&api-key=${this.API_KEY_FOR_GET_TICKERS_PRICE}`);
 
-      if (/^\s*$/.test(this.tickerInput)) {
-        isValidTickerInput = false
-      }
+          const data = await f.json();
 
-      if (this.tickers.length > 0) {
-        if (this.checkPresenceTicker(this.tickerInput)) {
-          isValidTickerInput = false
+          this.tickers.find(t => t.name === ticker.name).price = data.USD > 1 ? data.USD.toFixed(2) : data.USD.toPrecision(2);
+
+          if (this.currentTickerSelect?.name === ticker.name) {
+            this.graph.push(data.USD);
+          }
         }
-      }
-
-
-      for (let key in this.allManyList) {
-        if (!(this.tickerInput === key)) {
-          isValidTickerInput = false
-        }
-      }
-
-      return isValidTickerInput;
+      }, 5000);
     },
 
-    normalizeGraph() {
-      const maxValue = Math.max(...this.graph);
-      const minValue = Math.min(...this.graph);
-      return this.graph.map(
-          price => 5 + ((price - minValue) * 95) / (maxValue - minValue)
-      );
+    saveTickersInLocalStorage() {
+      const tickerListStorage = JSON.stringify(this.tickers)
+      localStorage.setItem(this.LOCAL_STORAGE_TICKERS_KEY, tickerListStorage)
     },
 
-    tickersFilter() {
-      return this.tickers.filter((ticker) => ticker.name.includes(this.filterInput))
-    },
-
-    paginationNext() {
-      this.page++
-    },
-
-    paginationPrev() {
-      this.page--;
-    },
-
-    checkStatePaginationButton() {
-      const maxPages = Math.ceil(this.tickersFilter().length / this.PAGE_TICKERS_LENGTH)
-      this.page === 1 ? this.isDisablePrevButtonPagination = true : this.isDisablePrevButtonPagination = false
-      this.page >= maxPages ? this.isDisableNextButtonPagination = true : this.isDisableNextButtonPagination = false
-    },
-
-    async getAllMany() {
-      let many = {}
-      await fetch('https://min-api.cryptocompare.com/data/all/coinlist?summary=true')
-          .then((response) => {
-            return response.json();
-          })
-          .then((data) => {
-            many = Object.assign({}, data.Data)
-          });
-
-      return many
+    clearInputs() {
+      this.tickerInput = ''
+      this.filterInput = ''
     }
+
 
   },
   watch: {
     tickerInput() {
       this.isWarningTickerExists = this.checkPresenceTicker(this.tickerInput)
-
       this.similarTickers.splice(0, 3)
-
-      for (const key in this.allManyList) {
-        if (key.includes(this.tickerInput)) {
-          this.similarTickers.push(key)
-        }
-
-        if (this.similarTickers.length === 4) {
-          return false
-        }
-      }
-
     },
 
-    page() {
-      this.checkStatePaginationButton()
+    filterInput() {
+      this.updatePageCounter()
     },
 
     tickers() {
-      const tickerListStorage = JSON.stringify(this.tickers)
-      localStorage.setItem(this.LOCAL_STORAGE_TICKER_KEY, tickerListStorage)
+      this.saveTickersInLocalStorage()
+      this.updatePageCounter()
     },
   }
 }

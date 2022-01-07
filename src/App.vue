@@ -1,3 +1,4 @@
+<script src="api.js"></script>
 <template>
   <div class="container mx-auto flex flex-col items-center bg-gray-100 p-4">
     <!--    <div class="fixed w-100 h-100 opacity-80 bg-purple-800 inset-0 z-50 flex items-center justify-center">-->
@@ -31,9 +32,9 @@
               <span
                   v-for="(similarTicker, idx) of filterSimilarTickers"
                   :key="idx"
-                  @click="addTickerFromSimilar(similarTicker.Symbol)"
+                  @click="addTickerFromSimilar(similarTicker)"
                   class="inline-flex items-center px-2 m-1 rounded-md text-xs font-medium bg-gray-300 text-gray-800 cursor-pointer">
-              {{ similarTicker.Symbol }}
+              {{ similarTicker }}
             </span>
             </div>
             <div v-if="isWarningTickerExists" class="text-sm text-red-600">Такой тикер уже добавлен</div>
@@ -166,8 +167,10 @@
     </div>
   </div>
 </template>
-
 <script>
+
+import {subscribeToUpdatePrice, removeSubscribeToUpdatePrice, getAllManyList} from './api'
+import {saveTickersInLocalStorage, getTickersFromLocalStorage} from './localStorage'
 
 // #-0-# Тикеры не обновляются при перезагрузке
 // #-1-# Валидация работает не исправно
@@ -196,22 +199,27 @@ export default {
       allManyList: [],
       graph: [],
 
-      LOCAL_STORAGE_TICKERS_KEY: 'tickerListStorage',
       PAGE_TICKERS_LENGTH: 6,
-      API_PATH_ALL_MANY_LIST: 'https://min-api.cryptocompare.com/data/all/coinlist?summary=true',
-      API_KEY_FOR_GET_TICKERS_PRICE: '1bb9bb67f17a67ad766c00d7dbcfa4e20a525052f5980e77f399bfce8939a7d0',
-      API_PATH_TICKERS_PRICE: 'https://min-api.cryptocompare.com/data/price',
       TICKERS_SIMILAR_OUT_COUNT: 4,
     }
   },
   mounted() {
-    this.getAllMany();
+    getAllManyList(data => {
+      this.similarTickers = data
+    })
 
-    if (this.getTickersFromLocalStorage) {
-      this.tickers = this.getTickersFromLocalStorage
-      this.subscribeToUpdates()
+    if (getTickersFromLocalStorage()) {
+      this.tickers = getTickersFromLocalStorage()
+      this.tickers.forEach(ticker => {
+        subscribeToUpdatePrice(ticker.name, newPrice => {
+          this.updateTickerPrice(ticker.name, newPrice);
+
+          if (ticker.name === this.currentTickerSelect?.name) {
+            this.graph.push(newPrice)
+          }
+        })
+      })
     }
-
   },
   computed: {
     tickersFilter() {
@@ -220,7 +228,7 @@ export default {
 
     searchSimilarTickers() {
       return this.similarTickers.filter(ticker => {
-        return ticker.Symbol.includes(this.tickerInput) && !this.checkPresenceTicker(ticker.Symbol)
+        return ticker.includes(this.tickerInput) && !this.checkPresenceTicker(ticker)
       })
     },
 
@@ -241,10 +249,6 @@ export default {
       return this.tickersFilter.slice(((this.page - 1) * this.PAGE_TICKERS_LENGTH), this.page * this.PAGE_TICKERS_LENGTH)
     },
 
-    getTickersFromLocalStorage() {
-      return JSON.parse(localStorage.getItem(this.LOCAL_STORAGE_TICKERS_KEY))
-    },
-
     normalizeGraph() {
       const maxValue = Math.max(...this.graph);
       const minValue = Math.min(...this.graph);
@@ -259,7 +263,7 @@ export default {
     },
 
     checkTickerInAllManyList() {
-      return this.similarTickers.find((ticker) => ticker.Symbol === this.tickerInput);
+      return this.similarTickers.find((ticker) => ticker === this.tickerInput);
     },
 
     maxPages() {
@@ -267,29 +271,13 @@ export default {
     }
   },
   methods: {
-    getAllMany() {
-      fetch(this.API_PATH_ALL_MANY_LIST)
-          .then((response) => {
-            return response.json();
-          })
-          .then((data) => {
-            this.similarTickers = this.normalizeSimilarTickers(data.Data)
-          });
+    updateTickerPrice(name, newPrice) {
+      this.tickers.forEach(ticker => {
+        if (ticker.name === name) {
+          ticker.price = newPrice
+        }
+      })
     },
-
-    normalizeSimilarTickers(similarTickers) {
-      const normSimilarTickers = []
-      for (const key in similarTickers) {
-        normSimilarTickers.push(similarTickers[key])
-      }
-      return normSimilarTickers;
-    },
-
-    /*
-    ------------------------------------------------------------------------------------------------------------------------
-    ------------------------- TICKER() -------------------------------------------------------------------------------------
-    ------------------------------------------------------------------------------------------------------------------------
-    */
 
     checkPresenceTicker(tickerName) {
       return this.tickers.find((t) => t.name === tickerName)
@@ -307,27 +295,31 @@ export default {
     },
 
     createTicker(name) {
+
+      subscribeToUpdatePrice(name, newPrice => {
+        this.updateTickerPrice(name, newPrice);
+
+        if (name === this.currentTickerSelect?.name) {
+          this.graph.push(newPrice)
+        }
+      })
+
       return {
         name: name,
-        price: null
+        price: '-'
       }
     },
 
     removeTicker(ticker) {
       const removeTickerIndex = this.tickers.findIndex((t) => t === ticker)
       this.tickers.splice(removeTickerIndex, 1)
+      removeSubscribeToUpdatePrice(ticker.name)
     },
 
     tickerCardHandler(ticker) {
       this.currentTickerSelect = ticker
       this.graph.splice(0, this.graph.length)
     },
-
-    /*
-    ------------------------------------------------------------------------------------------------------------------------
-    ------------------------- PAGINATION() ---------------------------------------------------------------------------------
-    ------------------------------------------------------------------------------------------------------------------------
-    */
 
     updatePageCounter() {
       const thereIsTickersInBoard = this.paginationTickers;
@@ -336,50 +328,14 @@ export default {
       }
     },
 
-    /*
-    ------------------------------------------------------------------------------------------------------------------------
-    ------------------------- GRAPH() --------------------------------------------------------------------------------------
-    ------------------------------------------------------------------------------------------------------------------------
-    */
-
-
-    /*
-    ------------------------------------------------------------------------------------------------------------------------
-    ------------------------- HELPERS() --------------------------------------------------------------------------------------
-    ------------------------------------------------------------------------------------------------------------------------
-    */
-
     removeGraph() {
       this.currentTickerSelect = null
-    },
-
-    subscribeToUpdates() {
-      setInterval(async () => {
-        for (const ticker of this.tickers) {
-          const f = await fetch(`${this.API_PATH_TICKERS_PRICE}?fsym=${ticker.name}&tsyms=USD&api-key=${this.API_KEY_FOR_GET_TICKERS_PRICE}`);
-
-          const data = await f.json();
-
-          this.tickers.find(t => t.name === ticker.name).price = data.USD > 1 ? data.USD.toFixed(2) : data.USD.toPrecision(2);
-
-          if (this.currentTickerSelect?.name === ticker.name) {
-            this.graph.push(data.USD);
-          }
-        }
-      }, 5000);
-    },
-
-    saveTickersInLocalStorage() {
-      const tickerListStorage = JSON.stringify(this.tickers)
-      localStorage.setItem(this.LOCAL_STORAGE_TICKERS_KEY, tickerListStorage)
     },
 
     clearInputs() {
       this.tickerInput = ''
       this.filterInput = ''
     }
-
-
   },
   watch: {
     tickerInput() {
@@ -392,7 +348,7 @@ export default {
     },
 
     tickers() {
-      this.saveTickersInLocalStorage()
+      saveTickersInLocalStorage(this.tickers)
       this.updatePageCounter()
     },
   }
